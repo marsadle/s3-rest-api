@@ -1,10 +1,20 @@
 from flask import Flask
 from flask import request
+
+from functools import reduce
 import json
 import broadlink
 
-device = None
-sub_devices = None
+devices = {}
+sub_devices = {}
+
+def get_devices(hub_ip):
+    global devices
+    global sub_devices
+    device = broadlink.hello(hub_ip)
+    device.auth()
+    devices[hub_ip] = device
+    sub_devices[hub_ip] = device.get_subdevices()
 
 def create_resp(state,gang):
     key = None
@@ -14,59 +24,73 @@ def create_resp(state,gang):
         key = 'pwr2'
     elif gang == 3:
         key = 'pwr3'
-    
+
     if state[key] == 1:
         return '{"is_active": "true"}'
     else:
         return '{"is_active": "false"}'
 
-def handle_request(request,did,gang):
-    if request.method == 'POST':     
+def handle_request(request, did, gang, hub_ip):
+    global devices
+    global app
+
+    if not hub_ip in devices:
+        get_devices(hub_ip)
+
+    if request.method == 'POST':
         data = json.loads(request.data)
-        pwr = [None,None,None,None]
-        
+        pwr = [None, None, None, None]
+
         if data['active'] == "true":
             pwr[gang] = 1
         else:
             pwr[gang] = 0
-            
-        return create_resp(device.set_state(did,pwr[1],pwr[2],pwr[3]),gang)
-        
-    else:
-        return create_resp(device.get_state(did),gang)
 
-def request_did(request,did):
-        return device.get_state(did)
+        return create_resp(devices[hub_ip].set_state(did, pwr[1], pwr[2], pwr[3]), gang)
+
+    else:
+        app.logger.info("Devices")
+        app.logger.info(devices)
+
+        return create_resp(devices[hub_ip].get_state(did), gang)
+
+def request_did(request, did, hub_ip):
+    global devices
+    global app
+
+    if not hub_ip in devices:
+        get_devices(hub_ip)
+
+    app.logger.info("Devices")
+    app.logger.info(devices)
+
+    return devices[hub_ip].get_state(did)
 
 app = Flask(__name__)
 
 @app.route("/",methods = ['GET'])
 def hello():
-    global device
-    global sub_devices
     global app
+    global sub_devices
     hub_ip = request.args.get('hub')
-    
-    if hub_ip is not  None:
-        
+
+    if hub_ip is not None:
         try:
-            device = broadlink.hello(hub_ip)
-            device.auth()
-            sub_devices = device.get_subdevices()
-            
+            get_devices(hub_ip)
+
         except Exception as err:
             return str(err)
-            
-        return str(sub_devices)
+
+        return str(sub_devices[hub_ip])
     else:
-        return str(sub_devices)
-    # http://127.0.0.1:5000/?hub=192.168.1.99
-    # http://127.0.0.1:5000/00000000000000000000a043b0d0783a/1
+        return str(sub_devices[hub_ip])
 
-@app.route("/<did>/<gang>",methods = ['POST', 'GET'])
-def dynamic(did,gang):
-    return handle_request(request,did,int(gang))
+@app.route("/<did>/<gang>", methods = ['POST', 'GET'])
+def dynamic(did, gang):
+    hub_ip = request.args.get('hub')
+    return handle_request(request, did, int(gang), hub_ip)
 
-@app.route("/<did>",methods = ['GET'])
+@app.route("/<did>", methods = ['GET'])
 def get_did(did):
-    return request_did(request,did)
+    hub_ip = request.args.get('hub')
+    return request_did(request, did, hub_ip)
